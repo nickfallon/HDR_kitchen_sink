@@ -1,0 +1,1003 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+    <meta http-equiv="content-type" content="text/html; charset=UTF-8">
+
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r81/three.min.js"></script>
+
+    <script src="js/loaders/HDRCubeTextureLoader.js"></script>
+    <script src="js/loaders/RGBELoader.js"></script>
+    <script src="js/Encodings.js"></script>
+    <script src="js/pmrem/PMREMGenerator.js"></script>
+    <script src="js/pmrem/PMREMCubeUVPacker.js"></script>
+
+    <script src="js/shaders/SSAOShader.js"></script>
+    <script src="js/shaders/CopyShader.js"></script>
+    <script src="js/shaders/DotScreenShader.js"></script>
+    <script src="js/shaders/RGBShiftShader.js"></script>
+
+    <script src="js/postprocessing/EffectComposer.js"></script>
+    <script src="js/postprocessing/RenderPass.js"></script>
+    <script src="js/postprocessing/MaskPass.js"></script>
+    <script src="js/postprocessing/ShaderPass.js"></script>
+
+    <script src="js/shaders/FXAAShader.js"></script>
+    <script src="js/shaders/ConvolutionShader.js"></script>
+    <script src="js/shaders/LuminosityHighPassShader.js"></script>
+    <script src="js/postprocessing/UnrealBloomPass.js"></script>
+
+    <script src="js/perlin.js"></script>
+    <script src="js/randomseed.js"></script>
+
+
+    <script src="js/libs/stats.min.js"></script>
+
+    <style type="text/css">
+        body {
+            margin: 0px;
+            padding: 0px;
+            overflow: hidden;
+        }
+
+        .msg {
+            position: absolute;
+            top: 20px;
+            left: 250px;
+            color: #ffffff;
+            font-family: sans-serif;
+            z-index: 999;
+        }
+    </style>
+
+    <title></title>
+
+
+    <script type='text/javascript'>
+
+
+            //  thebox with shadow and buffergeometry mesh
+
+
+            var anim = false;
+
+            var VanillaRunOnDomReady = function () {
+            var SCREEN_WIDTH = window.innerWidth;
+            var SCREEN_HEIGHT = window.innerHeight;
+
+            var camera, scene;
+            var canvasRenderer, renderer, composer;
+
+            var container, geometry;
+
+
+            var effectFXAA, bloomPass;
+            var hdrCubeMap;
+            var hdrCubeRenderTarget;
+            var standardMaterial;
+            var params = {
+                projection: 'normal',
+                background: false,
+                exposure: 1.0,
+                bloomStrength: 1.5,
+                bloomThreshold: 0.85,
+                bloomRadius: 0.4
+            };
+
+
+            var stats;
+            var toggle;
+
+            var positions;
+            var normals;
+            var colors;
+
+            var raycaster, mouse;
+            var mesh, line;
+
+            var windowHalfX = window.innerWidth / 2;
+            var windowHalfY = window.innerHeight / 2;
+
+            var light;
+            var spotLight;
+
+            var seed = gup('seed') || 'axlotl';
+            var perlin;
+
+            //terrain
+            var perside = 160;
+            var halfside = perside / 2;
+            var squares = perside * perside;
+            var triangles = squares * 2;
+            var scale = 4;
+
+            var timer;
+
+            var tick = 0;
+
+            function gup(name) {
+                name = name.replace(/[\[]/, "\\\[").replace(/[\]]/, "\\\]");
+                var regexS = "[\\?&]" + name + "=([^&#]*)";
+                var regex = new RegExp(regexS);
+                var results = regex.exec(window.location.href);
+                if (results == null)
+                    return null;
+                else
+                    return results[1];
+            }
+
+
+            init();
+            animate();
+
+            function init() {
+
+                container = document.createElement('div');
+                document.body.appendChild(container);
+
+                Math.seedrandom(seed);
+                perlin = new SimplexNoise();
+
+                //xz
+
+                camera = new THREE.PerspectiveCamera(30, window.innerWidth / window.innerHeight, 1, 100000);
+                camera.position.x = 0;
+                camera.position.y = 400;
+                camera.lookAt({ x: 0, y: 0, z: 0 });
+
+                scene = new THREE.Scene();
+
+                var groundMaterial = new THREE.MeshPhongMaterial({
+                    color: 0x3C3C3C
+                });
+
+                // LIGHTS
+                scene.add(new THREE.AmbientLight(0x888888));
+
+                light = new THREE.DirectionalLight(0xffffff, 0.5);
+                light.position.set(300, 500, 550);
+                light.position.multiplyScalar(2.3);
+
+                light.castShadow = true;
+                light.shadowMapWidth = 512;
+                light.shadowMapHeight = 512;
+
+
+                //blue
+                spotLight = new THREE.SpotLight(0x0000af);
+                spotLight.position.set(1150, 200, -750);
+                spotLight.angle = Math.PI / 3;
+                spotLight.penumbra = 0.8;
+                spotLight.castShadow = true;
+                scene.add(spotLight);
+
+
+
+                //shadow depth?
+                var d = 900;
+                light.shadowCameraLeft = -d;
+                light.shadowCameraRight = d;
+                light.shadowCameraTop = d;
+                light.shadowCameraBottom = -d;
+                light.shadowCameraFar = 1500;
+                light.shadowDarkness = 0.75;
+
+                scene.add(light);
+
+
+
+
+                //build terrain
+                //------------------------------------------------------------------------------------------------
+
+
+
+                geometry = new THREE.BufferGeometry();
+
+                positions = new Float32Array(triangles * 3 * 3);
+                normals = new Float32Array(triangles * 3 * 3);
+                colors = new Float32Array(triangles * 3 * 3);
+
+                var color = new THREE.Color();
+
+                var pA = new THREE.Vector3();
+                var pB = new THREE.Vector3();
+                var pC = new THREE.Vector3();
+
+                var cb = new THREE.Vector3();
+                var ab = new THREE.Vector3();
+
+
+                //- - - - nu-build - - - - -
+                var j = 0;
+
+                for (var i = 0; i < squares; i++) {
+
+
+                    toggle = (i % 2);
+
+                    //get grid posn
+                    var x = Math.floor(i / perside) - halfside;
+                    var y = 0;
+                    var z = (i % perside) - halfside;
+
+                    var sx = x * scale;
+                    var sy = y * scale;
+                    var sz = z * scale;
+
+                    var ax;
+                    var ay;
+                    var az;
+
+                    var bx;
+                    var by;
+                    var bz;
+
+                    var cx;
+                    var cy;
+                    var cz;
+
+                    var dx;
+                    var dy;
+                    var dz;
+
+                    var y1 = 0.02;
+                    var y2 = 30;
+
+
+
+                    var amp = 10.0;
+                    var pscale = 0.04;
+                    var psx = x * pscale;
+                    var psy = y * pscale;
+                    var psz = z * pscale;
+
+                    var ah = perlin.noise3d(psx, 0, psz);
+                    var bh = perlin.noise3d(psx, 0, psz + pscale);
+                    var ch = perlin.noise3d(psx + pscale, 0, psz + pscale);
+                    var dh = perlin.noise3d(psx + pscale, 0, psz);
+
+
+
+                    ax = sx;
+                    ay = ah * amp;
+                    az = sz;
+
+                    bx = sx;
+                    by = bh * amp;
+                    bz = sz + scale;
+
+                    cx = sx + scale;
+                    cy = ch * amp;
+                    cz = sz + scale;
+
+                    dx = sx + scale;
+                    dy = dh * amp;
+                    dz = sz;
+
+
+
+
+
+                    //=========================
+                    //triangle 1
+                    //=========================
+
+
+
+                    //position is every other triangle so multiply by 2
+                    j = i * 2 * 9;
+
+                    positions[j] = ax;
+                    positions[j + 1] = ay;
+                    positions[j + 2] = az;
+
+                    positions[j + 3] = bx;
+                    positions[j + 4] = by;
+                    positions[j + 5] = bz;
+
+                    positions[j + 6] = cx;
+                    positions[j + 7] = cy;
+                    positions[j + 8] = cz;
+
+                    // flat face normals
+
+                    pA.set(ax, ay, az);
+                    pB.set(bx, by, bz);
+                    pC.set(cx, cy, cz);
+
+                    cb.subVectors(pC, pB);
+                    ab.subVectors(pA, pB);
+                    cb.cross(ab);
+
+                    cb.normalize();
+
+                    var nx = cb.x;
+                    var ny = cb.y;
+                    var nz = cb.z;
+
+                    normals[j] = nx;
+                    normals[j + 1] = ny;
+                    normals[j + 2] = nz;
+
+                    normals[j + 3] = nx;
+                    normals[j + 4] = ny;
+                    normals[j + 5] = nz;
+
+                    normals[j + 6] = nx;
+                    normals[j + 7] = ny;
+                    normals[j + 8] = nz;
+
+                    // colors
+                    var checker = 0.3 + (toggle * 0.2);
+
+                    var vx = Math.random(); //checker;
+                    var vy = Math.random(); //checker;
+                    var vz = Math.random(); //checker;
+
+                    //vx = checker;
+                    //vy = checker;
+                    //vz = checker;
+
+                    vx = 0.1;
+                    vy = 0.2;
+                    vz = 0.8;
+
+                    color.setRGB(vx, vy, vz);
+                    //color.setRGB(0,10,200);
+
+                    colors[j] = color.r;
+                    colors[j + 1] = color.g;
+                    colors[j + 2] = color.b;
+
+                    colors[j + 3] = color.r;
+                    colors[j + 4] = color.g;
+                    colors[j + 5] = color.b;
+
+                    colors[j + 6] = color.r;
+                    colors[j + 7] = color.g;
+                    colors[j + 8] = color.b;
+
+
+
+                    //=========================
+                    //triangle 2
+                    //=========================
+
+                    j = j + 9;
+
+                    positions[j] = cx;
+                    positions[j + 1] = cy;
+                    positions[j + 2] = cz;
+
+                    positions[j + 3] = dx;
+                    positions[j + 4] = dy;
+                    positions[j + 5] = dz;
+
+                    positions[j + 6] = ax;
+                    positions[j + 7] = ay;
+                    positions[j + 8] = az;
+
+                    // flat face normals
+
+                    pA.set(cx, cy, cz);
+                    pB.set(dx, dy, dz);
+                    pC.set(ax, ay, az);
+
+                    cb.subVectors(pC, pB);
+                    ab.subVectors(pA, pB);
+                    cb.cross(ab);
+
+                    cb.normalize();
+
+                    var nx = cb.x;
+                    var ny = cb.y;
+                    var nz = cb.z;
+
+                    normals[j] = nx;
+                    normals[j + 1] = ny;
+                    normals[j + 2] = nz;
+
+                    normals[j + 3] = nx;
+                    normals[j + 4] = ny;
+                    normals[j + 5] = nz;
+
+                    normals[j + 6] = nx;
+                    normals[j + 7] = ny;
+                    normals[j + 8] = nz;
+
+                    // colors
+                    var checker = 0.3 + (toggle * 0.2);
+
+                    var vx = checker; //Math.random(); //( x / n ) + 0.5;
+                    var vy = checker; //Math.random(); //(y / n) + 0.5;
+                    var vz = checker; //Math.random(); //(z / n) + 0.5;
+
+                    vx = 0.1;
+                    vy = 0.2;
+                    vz = 0.8;
+
+                    color.setRGB(vx, vy, vz);
+                    //color.setRGB(0,10,200);
+
+                    colors[j] = color.r;
+                    colors[j + 1] = color.g;
+                    colors[j + 2] = color.b;
+
+                    colors[j + 3] = color.r;
+                    colors[j + 4] = color.g;
+                    colors[j + 5] = color.b;
+
+                    colors[j + 6] = color.r;
+                    colors[j + 7] = color.g;
+                    colors[j + 8] = color.b;
+
+                }
+
+
+                geometry.addAttribute('position', new THREE.BufferAttribute(positions, 3));
+                geometry.addAttribute('normal', new THREE.BufferAttribute(normals, 3));
+                geometry.addAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+                var material = new THREE.MeshPhongMaterial({
+                    color: 0xaaaaaa, specular: 0xffffff, shininess: 2,
+                    side: THREE.DoubleSide, vertexColors: THREE.VertexColors
+                });
+
+                var new_material = new THREE.MeshLambertMaterial({
+                    color: 0x0000ff
+                });
+
+
+                standardMaterial = new THREE.MeshStandardMaterial({
+                    map: null,
+                    color: 0xffffff,
+                    metalness: 1.3,
+                    shading: THREE.SmoothShading
+                });
+
+                mesh = new THREE.Mesh(geometry, standardMaterial);
+                //mesh = new THREE.Mesh(geometry, material);
+                //mesh = new THREE.Mesh(geometry, new_material);
+                mesh.castShadow = true;
+                mesh.receiveShadow = true;
+                //mesh.computeBoundingBox();
+                //scene.add(mesh);
+
+
+                //END
+                //-------------------------------------------------------------------------------------
+
+
+                // TorusKnotGeometry(radius, tube, radialSegments, tubularSegments, p, q, heightScale)
+                // var boxgeometry = new THREE.TorusKnotGeometry(300, 150, 60, 20);
+
+
+                boxgeometry = new THREE.BoxGeometry(1, 1, 1);
+
+                var boxmaterial = new THREE.MeshLambertMaterial({
+                    color: 0x0aeedf
+                });
+
+               thebox = new THREE.Mesh(boxgeometry, standardMaterial);
+
+               thebox.scale.x = 250;
+               thebox.scale.y = 250;
+               thebox.scale.z = 250;
+
+                thebox.castShadow = true;
+                thebox.receiveShadow = true;
+                thebox.position.x = 0;
+                thebox.position.y = 10;
+                thebox.position.z = 0;
+
+                scene.add(thebox);
+
+
+                var textureLoader = new THREE.TextureLoader();
+                textureLoader.load("./textures/roughness_map.jpg", function (map) {
+                    map.wrapS = THREE.RepeatWrapping;
+                    map.wrapT = THREE.RepeatWrapping;
+                    map.anisotropy = 4;
+
+
+
+                    //number of times repeated over object face?
+                    //map.repeat.set(9, 2);
+                    map.repeat.set(1, 1);
+
+
+                    standardMaterial.roughnessMap = map;
+                    standardMaterial.bumpMap = map;
+                    standardMaterial.needsUpdate = true;
+                });
+                var genCubeUrls = function (prefix, postfix) {
+                    return [
+						prefix + 'px' + postfix, prefix + 'nx' + postfix,
+						prefix + 'py' + postfix, prefix + 'ny' + postfix,
+						prefix + 'pz' + postfix, prefix + 'nz' + postfix
+                    ];
+                };
+                var hdrUrls = genCubeUrls("textures/cube/pisaHDR/", ".hdr");
+                new THREE.HDRCubeTextureLoader().load(THREE.UnsignedByteType, hdrUrls, function (hdrCubeMap) {
+                    var pmremGenerator = new THREE.PMREMGenerator(hdrCubeMap);
+                    pmremGenerator.update(renderer);
+                    var pmremCubeUVPacker = new THREE.PMREMCubeUVPacker(pmremGenerator.cubeLods);
+                    pmremCubeUVPacker.update(renderer);
+                    hdrCubeRenderTarget = pmremCubeUVPacker.CubeUVRenderTarget;
+                });
+
+
+
+
+
+
+
+
+                //picker
+
+                raycaster = new THREE.Raycaster();
+                mouse = new THREE.Vector2();
+                //picker line
+                var line_geometry = new THREE.BufferGeometry();
+                line_geometry.addAttribute('position', new THREE.BufferAttribute(new Float32Array(4 * 3), 3));
+                var material = new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 2, transparent: true });
+                line = new THREE.Line(line_geometry, material);
+                scene.add(line);
+
+
+
+
+                // RENDERER
+                renderer = new THREE.WebGLRenderer({ antialias: true });
+                renderer.setPixelRatio(window.devicePixelRatio);
+                renderer.setSize(SCREEN_WIDTH, SCREEN_HEIGHT);
+                renderer.domElement.style.position = "relative";
+                //shadows
+                renderer.shadowMapEnabled = true;
+                renderer.shadowMapSoft = true;
+                renderer.shadowCameraNear = 3;
+                renderer.shadowCameraFar = camera.far;
+                renderer.shadowCameraFov = 50;
+                renderer.shadowMapBias = 0.039;
+                renderer.shadowMapDarkness = 0.01;
+                renderer.shadowMapWidth = 1024;
+                renderer.shadowMapHeight = 1024;
+
+                // postprocessing
+
+                composer = new THREE.EffectComposer(renderer);
+                var renderPass = new THREE.RenderPass(scene, camera);
+
+                var copyShader = new THREE.ShaderPass(THREE.CopyShader);
+
+
+                // Setup depth pass
+                depthMaterial = new THREE.MeshDepthMaterial();
+                depthMaterial.depthPacking = THREE.RGBADepthPacking;
+                depthMaterial.blending = THREE.NoBlending;
+
+                var pars = { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter };
+                depthRenderTarget = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, pars);
+
+                // Setup SSAO pass
+                ssaoPass = new THREE.ShaderPass(THREE.SSAOShader);
+                //ssaoPass.renderToScreen = true;
+                //ssaoPass.uniforms[ "tDiffuse" ].value will be set by ShaderPass
+                ssaoPass.uniforms["tDepth"].value = depthRenderTarget.texture;
+                ssaoPass.uniforms['size'].value.set(window.innerWidth, window.innerHeight);
+                ssaoPass.uniforms['cameraNear'].value = camera.near;
+                ssaoPass.uniforms['cameraFar'].value = camera.far;
+                ssaoPass.uniforms['onlyAO'].value = 0;
+                ssaoPass.uniforms['aoClamp'].value = 0.7;
+                ssaoPass.uniforms['lumInfluence'].value = 0.9;
+
+
+
+                effectDotScreen = new THREE.ShaderPass(THREE.DotScreenShader);
+                //effectDotScreen.renderToScreen = true;
+                effectDotScreen.uniforms['scale'].value = 4;
+
+                var effectRGBShift = new THREE.ShaderPass(THREE.RGBShiftShader);
+                effectRGBShift.uniforms['amount'].value = 0.0015;
+
+
+                effectFXAA = new THREE.ShaderPass(THREE.FXAAShader);
+                effectFXAA.uniforms['resolution'].value.set(1 / window.innerWidth, 1 / window.innerHeight);
+
+                bloomPass = new THREE.UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);//1.0, 9, 0.5, 512);
+
+                composer.addPass(renderPass);
+
+
+                composer.addPass(effectFXAA);
+                composer.addPass(effectRGBShift);
+                composer.addPass(ssaoPass);
+                composer.addPass(bloomPass);
+
+
+                //composer.addPass(effectDotScreen);
+
+                composer.addPass(copyShader);
+                copyShader.renderToScreen = true;
+
+
+                //renderer.gammaInput = true;
+                //renderer.gammaOutput = true;
+
+                stats = new Stats();
+                container.appendChild(stats.dom);
+
+
+                container.appendChild(renderer.domElement);
+                window.addEventListener('resize', onWindowResize, false);
+                document.addEventListener('mousemove', onDocumentMouseMove, false);
+
+                onWindowResize();
+            }
+
+
+
+
+
+
+            function onWindowResize() {
+                windowHalfX = window.innerWidth / 2;
+                windowHalfY = window.innerHeight / 2;
+
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                composer.setSize(window.innerWidth, window.innerHeight);
+
+                effectFXAA.uniforms['resolution'].value.set(1 / window.innerWidth, 1 / window.innerHeight);
+
+            }
+
+            function onDocumentMouseMove(event) {
+
+                event.preventDefault();
+
+                mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+                mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            }
+
+            function animate() {
+
+
+                timer = Date.now() * 0.0002;
+
+                camera.position.x = Math.cos(timer * 2) * 800;
+                camera.position.z = Math.sin(timer * 2) * 800;
+
+                requestAnimationFrame(animate);
+
+
+                light.position.set(
+                    Math.sin(timer * 2.2) * 350,
+                    500,
+                    Math.cos(timer * 2.2) * 350);
+
+                spotLight.position.set(
+                  Math.sin(-timer * 2.8) * 950,
+                  280,
+                  Math.cos(-timer * 2.8) * 950);
+
+                //--------------------
+                //animate!!
+                //--------------------
+
+
+                if (anim) {
+                    var color = new THREE.Color();
+
+                    var pA = new THREE.Vector3();
+                    var pB = new THREE.Vector3();
+                    var pC = new THREE.Vector3();
+
+                    var cb = new THREE.Vector3();
+                    var ab = new THREE.Vector3();
+
+
+
+                    var time = 1;
+                    toggle = (i % 2);
+
+                    //- - - - nu-build - - - - -
+                    var j = 0;
+
+                    for (var i = 0; i < squares; i++) {
+
+                        //get grid posn
+                        var x = Math.floor(i / perside) - halfside;
+                        var y = 0;
+                        var z = (i % perside) - halfside;
+
+                        var sx = x * scale;
+                        var sy = y * scale;
+                        var sz = z * scale;
+
+                        var ax;
+                        var ay;
+                        var az;
+
+                        var bx;
+                        var by;
+                        var bz;
+
+                        var cx;
+                        var cy;
+                        var cz;
+
+                        var dx;
+                        var dy;
+                        var dz;
+
+                        var y1 = 0.02;
+                        var y2 = 30;
+
+                        var pA = new THREE.Vector3();
+                        var pB = new THREE.Vector3();
+                        var pC = new THREE.Vector3();
+
+                        var cb = new THREE.Vector3();
+                        var ab = new THREE.Vector3();
+
+                        //xz
+
+                        var time = 1;
+                        toggle = i % 2;
+
+                        var perlin_z = 0;
+
+                        perlin_z = timer * 0.2;
+
+                        perlin_z = timer;//Math.sin(timer * 20000) * 0.02;
+
+                        amp = 50;
+                        amp = mouse.x * 200;
+
+                        //perlin_z = 0;
+                        /*
+                        var amp = Math.abs(Math.tan(tick * 0.002) * 120);
+                        if (amp > 300) {
+                            amp = 300;
+                        }
+
+
+                        perlin_z = mouse.y;
+                        */
+
+
+                        var pscale = 0.025;
+
+                        //flow the terrain
+                        var psx = x * pscale + timer * 2;
+                        var psy = y * pscale;
+                        var psz = z * pscale + timer * 2;
+
+                        var y_off = -90;
+
+                        var ah = perlin.noise3d(psx, perlin_z, psz);
+                        var bh = perlin.noise3d(psx, perlin_z, psz + pscale);
+                        var ch = perlin.noise3d(psx + pscale, perlin_z, psz + pscale)
+                        var dh = perlin.noise3d(psx + pscale, perlin_z, psz);
+
+
+
+                        ax = sx;
+                        ay = y_off + ah * amp; //Math.sin((sx + sz) * y1) * y2;
+                        az = sz;
+
+                        bx = sx;
+                        by = y_off + bh * amp; //Math.sin((sx + (sz + scale)) * y1) * y2;
+                        bz = sz + scale;
+
+                        cx = sx + scale;
+                        cy = y_off + ch * amp; //Math.sin(((sx + scale) + (sz + scale)) * y1) * y2;
+                        cz = sz + scale;
+
+                        dx = sx + scale;
+                        dy = y_off + dh * amp; //Math.sin(((sx + scale) + (sz)) * y1) * y2;
+                        dz = sz;
+
+
+                        //triangle 1
+                        //position is every other triangle so multiply by 2
+                        j = i * 2 * 9;
+
+                        positions[j] = ax;
+                        positions[j + 1] = ay;
+                        positions[j + 2] = az;
+
+                        positions[j + 3] = bx;
+                        positions[j + 4] = by;
+                        positions[j + 5] = bz;
+
+                        positions[j + 6] = cx;
+                        positions[j + 7] = cy;
+                        positions[j + 8] = cz;
+
+                        // flat face normals
+
+                        pA.set(ax, ay, az);
+                        pB.set(bx, by, bz);
+                        pC.set(cx, cy, cz);
+
+                        cb.subVectors(pC, pB);
+                        ab.subVectors(pA, pB);
+                        cb.cross(ab);
+
+                        cb.normalize();
+
+                        var nx = cb.x;
+                        var ny = cb.y;
+                        var nz = cb.z;
+
+
+                        normals[j] = nx;
+                        normals[j + 1] = ny;
+                        normals[j + 2] = nz;
+
+                        normals[j + 3] = nx;
+                        normals[j + 4] = ny;
+                        normals[j + 5] = nz;
+
+                        normals[j + 6] = nx;
+                        normals[j + 7] = ny;
+                        normals[j + 8] = nz;
+
+                        //triangle 2
+
+
+                        j = j + 9;
+
+
+                        positions[j] = cx;
+                        positions[j + 1] = cy;
+                        positions[j + 2] = cz;
+
+                        positions[j + 3] = dx;
+                        positions[j + 4] = dy;
+                        positions[j + 5] = dz;
+
+                        positions[j + 6] = ax;
+                        positions[j + 7] = ay;
+                        positions[j + 8] = az;
+
+                        // flat face normals
+
+                        pA.set(cx, cy, cz);
+                        pB.set(dx, dy, dz);
+                        pC.set(ax, ay, az);
+
+                        cb.subVectors(pC, pB);
+                        ab.subVectors(pA, pB);
+                        cb.cross(ab);
+
+                        cb.normalize();
+
+                        var nx = cb.x;
+                        var ny = cb.y;
+                        var nz = cb.z;
+
+                        normals[j] = nx;
+                        normals[j + 1] = ny;
+                        normals[j + 2] = nz;
+
+                        normals[j + 3] = nx;
+                        normals[j + 4] = ny;
+                        normals[j + 5] = nz;
+
+                        normals[j + 6] = nx;
+                        normals[j + 7] = ny;
+                        normals[j + 8] = nz;
+
+                    }
+
+
+                    geometry.attributes.position.needsUpdate = true;
+                    geometry.attributes.normal.needsUpdate = true;
+                    //geometry.attributes.color.needsUpdate = true;
+
+
+                }
+
+
+                render();
+
+                stats.update();
+
+            }
+
+            function render() {
+
+                tick = tick + 1;
+
+
+
+                if (standardMaterial !== undefined) {
+                    standardMaterial.roughness = 1.0;
+                    standardMaterial.bumpScale = -0.05;
+                    var newEnvMap = standardMaterial.envMap;
+                    newEnvMap = hdrCubeRenderTarget ? hdrCubeRenderTarget.texture : null;
+                    if (newEnvMap !== standardMaterial.envMap) {
+                        standardMaterial.envMap = newEnvMap;
+                        standardMaterial.needsUpdate = true;
+                    }
+                }
+                renderer.toneMappingExposure = Math.pow(params.exposure, 4.0);
+
+
+
+
+
+
+                camera.lookAt(scene.position);
+
+                raycaster.setFromCamera(mouse, camera);
+                var intersects = raycaster.intersectObject(mesh);
+                if (intersects.length > 0) {
+                    var intersect = intersects[0];
+                    var face = intersect.face;
+                    var linePosition = line.geometry.attributes.position;
+                    var meshPosition = mesh.geometry.attributes.position;
+                    linePosition.copyAt(0, meshPosition, face.a);
+                    linePosition.copyAt(1, meshPosition, face.b);
+                    linePosition.copyAt(2, meshPosition, face.c);
+                    linePosition.copyAt(3, meshPosition, face.a);
+                    mesh.updateMatrix();
+                    line.geometry.applyMatrix(mesh.matrix);
+                    line.visible = true;
+                } else {
+                    line.visible = false;
+                }
+
+
+
+                // Render depth into depthRenderTarget
+                scene.overrideMaterial = depthMaterial;
+                renderer.render(scene, camera, depthRenderTarget, true);
+
+                // Render renderPass and SSAO shaderPass
+                scene.overrideMaterial = null;
+                composer.render();
+
+            }
+        }
+
+        var alreadyrunflag = 0;
+
+        if (document.addEventListener)
+            document.addEventListener("DOMContentLoaded", function () {
+                alreadyrunflag = 1;
+                VanillaRunOnDomReady();
+            }, false);
+        else if (document.all && !window.opera) {
+            document.write('<script type="text/javascript" id="contentloadtag" defer="defer" src="javascript:void(0)"><\/script>');
+            var contentloadtag = document.getElementById("contentloadtag")
+            contentloadtag.onreadystatechange = function () {
+                if (this.readyState == "complete") {
+                    alreadyrunflag = 1;
+                    VanillaRunOnDomReady();
+                }
+            }
+        }
+
+        window.onload = function () {
+            setTimeout("if (!alreadyrunflag){VanillaRunOnDomReady}", 0);
+        }
+
+
+    </script>
+
+
+</head>
+
+<body>
+    <div class="msg">2016 centralfax</div>
+</body>
+
+</html>
