@@ -1,0 +1,463 @@
+﻿<!DOCTYPE html>
+<html>
+
+<head>
+  <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta http-equiv="content-type" content="text/html; charset=UTF-8" />
+
+  <script src="js/three.min.js"></script>
+  <script src="js/libs/stats.min.js"></script>
+  <script src="js/controls/OrbitControls.js"></script>
+
+  <script src="js/loaders/HDRCubeTextureLoader.js"></script>
+  <script src="js/loaders/RGBELoader.js"></script>
+  <script src="js/Encodings.js"></script>
+  <script src="js/pmrem/PMREMGenerator.js"></script>
+  <script src="js/pmrem/PMREMCubeUVPacker.js"></script>
+  <script src="js/shaders/CopyShader.js"></script>
+  <script src="js/shaders/LuminosityHighPassShader.js"></script>
+
+  <script src="js/postprocessing/EffectComposer.js"></script>
+  <script src="js/postprocessing/RenderPass.js"></script>
+  <script src="js/postprocessing/ShaderPass.js"></script>
+  <script src="js/postprocessing/UnrealBloomPass.js"></script>
+
+  <script src="js/perlin.js"></script>
+  <script src="js/randomseed.js"></script>
+
+  <style type="text/css">
+    body {
+      margin: 0px;
+      padding: 0px;
+      overflow: hidden;
+    }
+
+    .msg {
+      position: absolute;
+      top: 20px;
+      left: 250px;
+      color: #ffffff;
+      font-family: sans-serif;
+      z-index: 999;
+    }
+  </style>
+
+  <title>demo</title>
+
+</head>
+
+<body>
+  <div class="msg">HDR materials - centralfax 2019</div>
+  <script type="text/javascript">
+
+    // python -m SimpleHTTPServer 8080
+
+    var anim = true;
+    var timer = 8.7;
+    var timer2 = 0;
+    var timer3 = 0;
+    var camera;
+    var scene;
+    var controls;
+
+    var SCREEN_WIDTH = window.innerWidth;
+    var SCREEN_HEIGHT = window.innerHeight;
+
+    var canvasRenderer;
+    var renderer;
+    var composer;
+    var container;
+    var geometry;
+
+    var bloomPass;
+    var hdrCubeMap;
+    var hdrCubeRenderTarget;
+
+    var textureLoader = new THREE.TextureLoader();
+    var materials = [];
+
+    //list of HDR materials
+    var materials_config = [
+      { name: 'metal', color: 0xffffff, colormap: "./textures/metal-color.jpg", roughmap: "./textures/metal-bump.jpg", metalness: 1.0, roughness: 1.0, bumpscale: 1.0, emissive: 0x000000, emissiveIntensity: 0.0 },
+      { name: 'mirror', color: 0xff0000, colormap: "./textures/mirror-color.jpg", roughmap: "./textures/mirror-bump.jpg", metalness: 1.0, roughness: 1.0, bumpscale: 1.0, emissive: 0x330000, emissiveIntensity: 0.4 },
+      { name: 'lightbulb', color: 0x000000, colormap: null, roughmap: null, metalness: 0.2, roughness: 0.0, bumpscale: 0.0, emissive: 0xffffff, emissiveIntensity: 1.0 },
+      { name: 'metal2', color: 0xffffff, colormap: "./textures/metal-color.jpg", roughmap: "./textures/metal-bump.jpg", metalness: 1.0, roughness: 1.0, bumpscale: 1.0, emissive: 0x00ff00, emissiveIntensity: 0.1 }
+    ];
+
+    var params = {
+      projection: "normal",
+      background: false,
+      exposure: 1.0,
+      bloomStrength: 0.9,
+      bloomThreshold: 0.85,
+      bloomRadius: 0.4
+    };
+
+    var stats;
+    var toggle;
+
+    var positions;
+    var normals;
+    var colors;
+    var uvs;
+
+    var mouse = new THREE.Vector2();
+    var mesh;
+
+    var windowHalfX = window.innerWidth / 2;
+    var windowHalfY = window.innerHeight / 2;
+
+    var light;
+
+    var seed = gup("seed") || "axlotl";
+    var perlin;
+
+    //terrain
+    var perside = 160;
+    var halfside = perside / 2;
+    var squares = perside * perside;
+    var triangles = squares * 2;
+    var scale = 4;
+
+    function gup(name) {
+      name = name.replace(/[\[]/, "\\\[").replace(/[\]]/, "\\\]");
+      var regexS = "[\\?&]" + name + "=([^&#]*)";
+      var regex = new RegExp(regexS);
+      var results = regex.exec(window.location.href);
+      if (results == null) return null;
+      else return results[1];
+    }
+
+    init();
+    animate();
+
+
+    function init() {
+
+      container = document.createElement("div");
+      document.body.appendChild(container);
+
+
+
+      Math.seedrandom(seed);
+      perlin = new SimplexNoise();
+
+      camera = new THREE.PerspectiveCamera(
+        30,
+        window.innerWidth / window.innerHeight,
+        1,
+        100000
+      );
+      camera.position.x = 0;
+      camera.position.y = 400;
+      camera.lookAt({ x: 0, y: 0, z: 0 });
+
+      scene = new THREE.Scene();
+
+      //lights
+
+      light = new THREE.DirectionalLight(0xff7f00, 0.1);
+      light.castShadow = true;
+      light.shadowMapWidth = 512;
+      light.shadowMapHeight = 512;
+      light.position.set(-3350, 2100, -3350);
+      scene.add(light);
+
+      //materials
+      materials_config.forEach(mc => {
+        create_material(mc);
+      });
+
+      //set HDR on materials
+      setup_hdr();
+
+      // ---- plane ----
+
+      planegeometry = new THREE.PlaneBufferGeometry(10, 10, 100, 100);
+      plane = new THREE.Mesh(planegeometry, get_material('mirror'));
+      plane.scale.x = 800;
+      plane.scale.y = 800;
+      plane.castShadow = true;
+      plane.receiveShadow = true;
+      plane.position.x = 0;
+      plane.position.y = -100;
+      plane.position.z = 0;
+      scene.add(plane);
+
+      // ---- box -----
+
+      for (var i = 0; i < 6; i++) {
+        for (var j = 0; j < 6; j++) {
+          var boxgeometry = new THREE.BoxBufferGeometry(10, 10, 10, 1, 1, 1);
+          var thebox;
+          thebox = new THREE.Mesh(boxgeometry, get_material('metal'));
+          thebox.scale.x = 60;
+          thebox.scale.z = 60;
+          thebox.castShadow = true;
+          thebox.receiveShadow = true;
+          thebox.position.x = i * 1000 - 2500;
+          thebox.position.y = 150;
+          thebox.scale.y = 30 + Math.random() * 30;
+          thebox.position.z = j * 1000 - 2500;
+          scene.add(thebox);
+        }
+      }
+
+      // -- skybox --
+
+      var skyGeometry = new THREE.CubeGeometry(15000, 15000, 15000);
+      var skyMaterialArray = [];
+      for (var i = 0; i < 6; i++)
+        skyMaterialArray.push(new THREE.MeshBasicMaterial({ map: THREE.ImageUtils.loadTexture('./textures/sky.png'), side: THREE.BackSide }));
+      var skyMaterial = new THREE.MeshFaceMaterial(skyMaterialArray);
+      var skyBox = new THREE.Mesh(skyGeometry, skyMaterial);
+      scene.add(skyBox);
+
+
+      // renderer
+
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setSize(SCREEN_WIDTH, SCREEN_HEIGHT);
+      renderer.domElement.style.position = "relative";
+
+      //shadows
+
+      renderer.shadowMapEnabled = true;
+      renderer.shadowMapSoft = true;
+      renderer.shadowCameraNear = 3;
+      renderer.shadowCameraFar = camera.far;
+      renderer.shadowCameraFov = 50;
+      renderer.shadowMapBias = 0.039;
+      renderer.shadowMapDarkness = 0.01;
+      renderer.shadowMapWidth = 1024;
+      renderer.shadowMapHeight = 1024;
+
+      // postprocessing
+
+      composer = new THREE.EffectComposer(renderer);
+      var renderPass = new THREE.RenderPass(scene, camera);
+      var copyShader = new THREE.ShaderPass(THREE.CopyShader);
+
+      depthMaterial = new THREE.MeshDepthMaterial();
+      depthMaterial.depthPacking = THREE.RGBADepthPacking;
+      depthMaterial.blending = THREE.NoBlending;
+      var pars = {
+        minFilter: THREE.LinearFilter,
+        magFilter: THREE.LinearFilter
+      };
+      depthRenderTarget = new THREE.WebGLRenderTarget(
+        window.innerWidth,
+        window.innerHeight,
+        pars
+      );
+      bloomPass = new THREE.UnrealBloomPass(
+        new THREE.Vector2(window.innerWidth, window.innerHeight),
+        params.bloomStrength,
+        params.bloomRadius,
+        params.bloomThreshold
+      );
+      composer.addPass(renderPass);
+      composer.addPass(bloomPass);
+      composer.addPass(copyShader);
+      copyShader.renderToScreen = true;
+
+      //stats
+
+      stats = new Stats();
+      container.appendChild(stats.dom);
+
+      container.appendChild(renderer.domElement);
+      window.addEventListener("resize", onWindowResize, false);
+      document.addEventListener("mousemove", onDocumentMouseMove, false);
+      controls = new THREE.OrbitControls(camera, renderer.domElement);
+      camera.position.set(-2880, 1200, -2500);
+
+      controls.center.set(0, 0, 0);
+      controls.update();
+
+      controls.enableDamping = true; // an animation loop is required when either damping or auto-rotation are enabled
+      controls.dampingFactor = 0.25;
+      controls.screenSpacePanning = false;
+      controls.minDistance = 100;
+      controls.maxDistance = 20000;
+
+
+      onWindowResize();
+
+    }
+
+    function onWindowResize() {
+      windowHalfX = window.innerWidth / 2;
+      windowHalfY = window.innerHeight / 2;
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      composer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    function onDocumentMouseMove(event) {
+      event.preventDefault();
+      mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+      mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+    }
+
+    function animate() {
+
+      requestAnimationFrame(animate);
+
+      timer = timer + 0.002;
+      timer2 = timer2 + 0.004;
+      timer3 = timer3 + 0.012;
+
+      //animate plane
+
+      plane.rotation.x = -Math.PI / 2;
+      let pos = planegeometry.getAttribute("position");
+      let pa = pos.array;
+
+      //perlin
+      var amp = 150;
+      //amp = mouse.x * 200;
+
+      //update the plane mesh
+
+      var pa_len = pos.array.length;
+      var sq = Math.sqrt(pa_len / 3);
+
+      var pscale = 0.05;
+      var pscale2 = 0.025;
+
+      //xzn
+      for (var i = 2; i < pa_len; i = i + 3) {
+        //sin update
+
+        var cx = Math.floor(i / 3 / sq);
+        var cy = Math.floor((i / 3) % sq);
+
+        //perlin update
+        //wobble
+        var psx = cx * pscale;
+        var psz = cy * pscale;
+        var ah = perlin.noise3d(psx, timer2, psz);
+
+        //water-like ripple
+        var psx2 = cx * pscale2 + timer3;
+        var psz2 = cy * pscale2 + timer3;
+        var aj = perlin.noise3d(psx2, 210, psz2);
+        amp2 = 0.2;
+
+        //amp = 0;
+        //amp2 = 0;
+
+        pa[i] = ah * amp + aj * amp2;
+      }
+
+      pos.needsUpdate = true;
+      planegeometry.computeVertexNormals();
+
+      render();
+
+      stats.update();
+      controls.update();
+
+    }
+
+    function render() {
+
+      renderer.toneMappingExposure = Math.pow(params.exposure, 4.0);
+      camera.lookAt(scene.position);
+      // Render depth into depthRenderTarget
+      //scene.overrideMaterial = depthMaterial;
+      renderer.render(scene, camera, depthRenderTarget, true);
+      // Render renderPass and SSAO shaderPass
+      scene.overrideMaterial = null;
+      composer.render();
+    }
+
+    function get_material(name) {
+      var len = materials.length;
+      for (var i = 0; i < len; i++) {
+        if (materials[i].name == name) {
+          return materials[i];
+        }
+      }
+    }
+    //create HDR/rough/bump materials (metal/mirror/glass-like)
+    function create_material(mc) {
+
+      var m = new THREE.MeshStandardMaterial({
+        map: null,
+        color: mc.color,
+        emissive: mc.emissive,
+        emissiveIntensity: mc.emissiveIntensity,
+        metalness: mc.metalness,
+        shading: THREE.SmoothShading
+      });
+      m.name = mc.name;
+      materials.push(m);
+
+      //load and attach bump/rough
+      if (mc.roughmap) {
+        textureLoader.load(mc.roughmap, function (map) {
+          map.wrapS = THREE.RepeatWrapping;
+          map.wrapT = THREE.RepeatWrapping;
+          map.anisotropy = 4;
+          map.repeat.set(1, 1);
+          m.roughness = mc.roughness;
+          m.bumpScale = mc.bumpscale;
+          m.roughnessMap = map;
+          m.bumpMap = map;
+          m.needsUpdate = true;
+        });
+      }
+      //load and attach colormap
+      if (mc.colormap) {
+        textureLoader.load(mc.colormap, function (map) {
+          m.map = map;
+        });
+      }
+      return m;
+    }
+
+    function setup_hdr() {
+      var genCubeUrls = function (prefix, postfix) {
+        return [
+          prefix + "px" + postfix,
+          prefix + "nx" + postfix,
+          prefix + "py" + postfix,
+          prefix + "ny" + postfix,
+          prefix + "pz" + postfix,
+          prefix + "nz" + postfix
+        ];
+      };
+      //load HDR and apply to materials
+      var hdrUrls = genCubeUrls("textures/cube/skyHDR/", ".hdr");
+      new THREE.HDRCubeTextureLoader().load(
+        THREE.UnsignedByteType,
+        hdrUrls,
+        function (hdrCubeMap) {
+          var pmremGenerator = new THREE.PMREMGenerator(hdrCubeMap);
+          pmremGenerator.update(renderer);
+          var pmremCubeUVPacker = new THREE.PMREMCubeUVPacker(
+            pmremGenerator.cubeLods
+          );
+          pmremCubeUVPacker.update(renderer);
+          hdrCubeRenderTarget = pmremCubeUVPacker.CubeUVRenderTarget;
+          //set envmap to all materials
+          materials.forEach(m => {
+            m.envMap = hdrCubeRenderTarget.texture;
+            m.needsUpdate = true;
+          });
+        }
+      );
+
+    }
+
+
+  </script>
+
+</body>
+
+</html>
