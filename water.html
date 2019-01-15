@@ -1,0 +1,585 @@
+﻿<!DOCTYPE html>
+<html>
+
+<head>
+  <meta http-equiv="content-type" content="text/html; charset=UTF-8" />
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r81/three.min.js"></script>
+
+  <script src="js/loaders/HDRCubeTextureLoader.js"></script>
+  <script src="js/loaders/RGBELoader.js"></script>
+  <script src="js/Encodings.js"></script>
+  <script src="js/pmrem/PMREMGenerator.js"></script>
+  <script src="js/pmrem/PMREMCubeUVPacker.js"></script>
+
+  <script src="js/shaders/SSAOShader.js"></script>
+  <script src="js/shaders/CopyShader.js"></script>
+  <script src="js/shaders/DotScreenShader.js"></script>
+  <script src="js/shaders/RGBShiftShader.js"></script>
+
+  <script src="js/postprocessing/EffectComposer.js"></script>
+  <script src="js/postprocessing/RenderPass.js"></script>
+  <script src="js/postprocessing/MaskPass.js"></script>
+  <script src="js/postprocessing/ShaderPass.js"></script>
+
+  <script src="js/shaders/FXAAShader.js"></script>
+  <script src="js/shaders/ConvolutionShader.js"></script>
+  <script src="js/shaders/LuminosityHighPassShader.js"></script>
+  <script src="js/postprocessing/UnrealBloomPass.js"></script>
+
+  <script src="js/perlin.js"></script>
+  <script src="js/randomseed.js"></script>
+
+  <script src="js/libs/stats.min.js"></script>
+
+  <style type="text/css">
+    body {
+      margin: 0px;
+      padding: 0px;
+      overflow: hidden;
+    }
+
+    .msg {
+      position: absolute;
+      top: 20px;
+      left: 250px;
+      color: #ffffff;
+      font-family: sans-serif;
+      z-index: 999;
+    }
+  </style>
+
+  <title></title>
+
+  <script type="text/javascript">
+
+
+    // python -m SimpleHTTPServer 8080
+
+    //  thebox with shadow and buffergeometry mesh
+
+    var anim = true;
+    var timer = 8.7;
+
+    var plane;
+    var planegeometry;
+
+    var timer2 = 0;
+    var timer3 = 0;
+    var camera, scene;
+
+    var VanillaRunOnDomReady = function () {
+      var SCREEN_WIDTH = window.innerWidth;
+      var SCREEN_HEIGHT = window.innerHeight;
+
+      var canvasRenderer, renderer, composer;
+
+      var container, geometry;
+
+      var effectFXAA, bloomPass;
+      var hdrCubeMap;
+      var hdrCubeRenderTarget;
+      var metalMaterial;
+      var params = {
+        projection: "normal",
+        background: false,
+        exposure: 1.0,
+        bloomStrength: 1.5,
+        bloomThreshold: 0.85,
+        bloomRadius: 0.4
+      };
+
+      var stats;
+      var toggle;
+
+      var positions;
+      var normals;
+      var colors;
+      var uvs;
+
+      var raycaster, mouse;
+      var mesh, line;
+
+      var windowHalfX = window.innerWidth / 2;
+      var windowHalfY = window.innerHeight / 2;
+
+      var light;
+      var spotLight;
+
+      var seed = gup("seed") || "axlotl";
+      var perlin;
+
+      //terrain
+      var perside = 160;
+      var halfside = perside / 2;
+      var squares = perside * perside;
+      var triangles = squares * 2;
+      var scale = 4;
+
+      var tick = 0;
+
+      function gup(name) {
+        name = name.replace(/[\[]/, "\\\[").replace(/[\]]/, "\\\]");
+        var regexS = "[\\?&]" + name + "=([^&#]*)";
+        var regex = new RegExp(regexS);
+        var results = regex.exec(window.location.href);
+        if (results == null) return null;
+        else return results[1];
+      }
+
+      init();
+      animate();
+
+      function init() {
+        container = document.createElement("div");
+        document.body.appendChild(container);
+
+        Math.seedrandom(seed);
+        perlin = new SimplexNoise();
+
+        //xz
+
+        camera = new THREE.PerspectiveCamera(
+          30,
+          window.innerWidth / window.innerHeight,
+          1,
+          100000
+        );
+        camera.position.x = 0;
+        camera.position.y = 400;
+        camera.lookAt({ x: 0, y: 0, z: 0 });
+
+        scene = new THREE.Scene();
+
+        var groundMaterial = new THREE.MeshPhongMaterial({
+          color: 0x3c3c3c
+        });
+
+        // LIGHTS
+        //scene.add(new THREE.AmbientLight(0xffffff));
+
+        light = new THREE.DirectionalLight(0xffffff, 0.5);
+        light.position.set(300, 500, 550);
+        light.position.multiplyScalar(2.3);
+
+        light.castShadow = true;
+        light.shadowMapWidth = 512;
+        light.shadowMapHeight = 512;
+
+        //blue
+        spotLight = new THREE.SpotLight(0x0000af);
+        spotLight.position.set(1150, 200, -750);
+        spotLight.angle = Math.PI / 3;
+        spotLight.penumbra = 0.8;
+        spotLight.castShadow = true;
+        scene.add(spotLight);
+
+        //shadow depth?
+        var d = 900;
+        light.shadowCameraLeft = -d;
+        light.shadowCameraRight = d;
+        light.shadowCameraTop = d;
+        light.shadowCameraBottom = -d;
+        light.shadowCameraFar = 1500;
+        light.shadowDarkness = 0.75;
+
+        scene.add(light);
+
+        var material = new THREE.MeshPhongMaterial({
+          color: 0xaaaaaa,
+          specular: 0xffffff,
+          shininess: 2,
+          side: THREE.DoubleSide,
+          vertexColors: THREE.VertexColors
+        });
+
+        var new_material = new THREE.MeshLambertMaterial({
+          color: 0x0000ff
+        });
+
+        metalMaterial = new THREE.MeshStandardMaterial({
+          map: null,
+          color: 0xffffff,
+          metalness: 1.3,
+          shading: THREE.SmoothShading
+        });
+
+        // TorusKnotGeometry(radius, tube, radialSegments, tubularSegments, p, q, heightScale)
+        // var boxgeometry = new THREE.TorusKnotGeometry(300, 150, 60, 20);
+
+        var boxmaterial = new THREE.MeshLambertMaterial({
+          color: 0x0aeedf,
+          side: THREE.DoubleSide
+        });
+
+        // ---- plane ----
+
+        planegeometry = new THREE.PlaneBufferGeometry(30, 30, 100, 100);
+
+        planegeometry.dynamic = true;
+
+        plane = new THREE.Mesh(planegeometry, metalMaterial);
+
+        plane.scale.x = 30;
+        plane.scale.y = 30;
+        //plane.scale.z = 30;
+
+        plane.castShadow = true;
+        plane.receiveShadow = true;
+        plane.position.x = 0;
+        plane.position.y = 10;
+        plane.position.z = 0;
+
+        scene.add(plane);
+
+        // ---- box -----
+
+        boxgeometry = new THREE.BoxBufferGeometry(1, 1, 1, 15, 15, 15);
+
+        thebox = new THREE.Mesh(boxgeometry, metalMaterial);
+
+        thebox.scale.x = 250;
+        thebox.scale.y = 250;
+        thebox.scale.z = 250;
+
+        thebox.castShadow = true;
+        thebox.receiveShadow = true;
+        thebox.position.x = 0;
+        thebox.position.y = 20;
+        thebox.position.z = 0;
+
+        //------
+        // scene.add(thebox);
+        //------
+
+        var textureLoader = new THREE.TextureLoader();
+        textureLoader.load("./textures/rough2.jpg", function (map) {
+          map.wrapS = THREE.RepeatWrapping;
+          map.wrapT = THREE.RepeatWrapping;
+          map.anisotropy = 4;
+
+          //number of times repeated over object face?
+          //map.repeat.set(9, 2);
+          map.repeat.set(1, 1);
+
+          metalMaterial.roughnessMap = map;
+          metalMaterial.bumpMap = map;
+          metalMaterial.needsUpdate = true;
+        });
+        var genCubeUrls = function (prefix, postfix) {
+          return [
+            prefix + "px" + postfix,
+            prefix + "nx" + postfix,
+            prefix + "py" + postfix,
+            prefix + "ny" + postfix,
+            prefix + "pz" + postfix,
+            prefix + "nz" + postfix
+          ];
+        };
+        var hdrUrls = genCubeUrls("textures/cube/pisaHDR/", ".hdr");
+        new THREE.HDRCubeTextureLoader().load(
+          THREE.UnsignedByteType,
+          hdrUrls,
+          function (hdrCubeMap) {
+            var pmremGenerator = new THREE.PMREMGenerator(hdrCubeMap);
+            pmremGenerator.update(renderer);
+            var pmremCubeUVPacker = new THREE.PMREMCubeUVPacker(
+              pmremGenerator.cubeLods
+            );
+            pmremCubeUVPacker.update(renderer);
+            hdrCubeRenderTarget = pmremCubeUVPacker.CubeUVRenderTarget;
+          }
+        );
+
+        //picker
+
+        raycaster = new THREE.Raycaster();
+        mouse = new THREE.Vector2();
+
+        //picker line
+        var line_geometry = new THREE.BufferGeometry();
+
+        line_geometry.addAttribute(
+          "position",
+          new THREE.BufferAttribute(new Float32Array(4 * 3), 3)
+        );
+        var material = new THREE.LineBasicMaterial({
+          color: 0xffffff,
+          linewidth: 2,
+          transparent: true
+        });
+        line = new THREE.Line(line_geometry, material);
+        scene.add(line);
+
+        // RENDERER
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.setSize(SCREEN_WIDTH, SCREEN_HEIGHT);
+        renderer.domElement.style.position = "relative";
+        //shadows
+        renderer.shadowMapEnabled = true;
+        renderer.shadowMapSoft = true;
+        renderer.shadowCameraNear = 3;
+        renderer.shadowCameraFar = camera.far;
+        renderer.shadowCameraFov = 50;
+        renderer.shadowMapBias = 0.039;
+        renderer.shadowMapDarkness = 0.01;
+        renderer.shadowMapWidth = 1024;
+        renderer.shadowMapHeight = 1024;
+
+        // postprocessing
+
+        composer = new THREE.EffectComposer(renderer);
+        var renderPass = new THREE.RenderPass(scene, camera);
+
+        var copyShader = new THREE.ShaderPass(THREE.CopyShader);
+
+        // Setup depth pass
+        depthMaterial = new THREE.MeshDepthMaterial();
+        depthMaterial.depthPacking = THREE.RGBADepthPacking;
+        depthMaterial.blending = THREE.NoBlending;
+
+        var pars = {
+          minFilter: THREE.LinearFilter,
+          magFilter: THREE.LinearFilter
+        };
+        depthRenderTarget = new THREE.WebGLRenderTarget(
+          window.innerWidth,
+          window.innerHeight,
+          pars
+        );
+
+        // Setup SSAO pass
+        /*
+        ssaoPass = new THREE.ShaderPass(THREE.SSAOShader);
+        ssaoPass.uniforms["tDepth"].value = depthRenderTarget.texture;
+        ssaoPass.uniforms["size"].value.set(
+          window.innerWidth,
+          window.innerHeight
+        );
+        ssaoPass.uniforms["cameraNear"].value = camera.near;
+        ssaoPass.uniforms["cameraFar"].value = camera.far;
+        ssaoPass.uniforms["onlyAO"].value = 0;
+        ssaoPass.uniforms["aoClamp"].value = 0.7;
+        ssaoPass.uniforms["lumInfluence"].value = 0.9;
+        */
+
+        effectDotScreen = new THREE.ShaderPass(THREE.DotScreenShader);
+        //effectDotScreen.renderToScreen = true;
+        effectDotScreen.uniforms["scale"].value = 4;
+
+        var effectRGBShift = new THREE.ShaderPass(THREE.RGBShiftShader);
+        effectRGBShift.uniforms["amount"].value = 0.0015;
+
+        effectFXAA = new THREE.ShaderPass(THREE.FXAAShader);
+        effectFXAA.uniforms["resolution"].value.set(
+          1 / window.innerWidth,
+          1 / window.innerHeight
+        );
+
+        //first number = flow amount!
+
+        bloomPass = new THREE.UnrealBloomPass(
+          new THREE.Vector2(window.innerWidth, window.innerHeight),
+          0.9,
+          0.4,
+          0.85
+        ); //1.0, 9, 0.5, 512);
+
+        composer.addPass(renderPass);
+
+        //don't need these!
+        //composer.addPass(effectFXAA);
+        //composer.addPass(effectRGBShift);
+        // composer.addPass(ssaoPass);
+
+        composer.addPass(bloomPass);
+
+        //composer.addPass(effectDotScreen);
+
+        composer.addPass(copyShader);
+        copyShader.renderToScreen = true;
+
+        //renderer.gammaInput = true;
+        //renderer.gammaOutput = true;
+
+        stats = new Stats();
+        container.appendChild(stats.dom);
+
+        container.appendChild(renderer.domElement);
+        window.addEventListener("resize", onWindowResize, false);
+        document.addEventListener("mousemove", onDocumentMouseMove, false);
+
+        onWindowResize();
+      }
+
+      function onWindowResize() {
+        windowHalfX = window.innerWidth / 2;
+        windowHalfY = window.innerHeight / 2;
+
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        composer.setSize(window.innerWidth, window.innerHeight);
+
+        effectFXAA.uniforms["resolution"].value.set(
+          1 / window.innerWidth,
+          1 / window.innerHeight
+        );
+      }
+
+      function onDocumentMouseMove(event) {
+        event.preventDefault();
+
+        mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+        mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+      }
+
+      function animate() {
+        timer2 = timer2 + 0.004;
+        timer3 = timer3 + 0.012;
+
+        timer = timer + 0.002;
+
+        //camera.position.x = Math.cos(timer * 2.5) * 600;
+        //camera.position.z = Math.sin(timer * 2.5) * 600;
+        //camera.position.y = 400;
+
+        camera.position.x = Math.cos(8.85 * 0.5) * 600;
+        camera.position.z = Math.sin(8.85 * 0.5) * 600;
+        camera.position.y = 400;
+
+        //camera.position.x = Math.cos(timer * 1) * 360;
+        //camera.position.z = Math.sin(timer * 1) * 360;
+        //camera.position.y = 300;
+
+        requestAnimationFrame(animate);
+
+        light.position.set(
+          Math.sin(timer * 2.2) * 350,
+          200,
+          Math.cos(timer * 2.2) * 350
+        );
+
+        spotLight.position.set(
+          Math.sin(-timer * 2.8) * 950,
+          80,
+          Math.cos(-timer * 2.8) * 950
+        );
+
+        //animate plane
+
+        plane.rotation.x = -Math.PI / 2;
+        let pos = planegeometry.getAttribute("position");
+        let pa = pos.array;
+
+        //perlin
+
+        var amp = 15;
+        amp = mouse.x * 200;
+
+        //update the plane mesh
+
+        var pa_len = pos.array.length;
+        var sq = Math.sqrt(pa_len / 3);
+
+        var pscale = 0.05;
+        var pscale2 = 0.085;
+
+        //pscale = mouse.y * 0.08;
+
+        //xzn
+        for (var i = 2; i < pa_len; i = i + 3) {
+          //sin update
+          //pa[i] = Math.sin((timer * 3000 + i) * 0.02) * 9;
+
+          var cx = Math.floor(i / 3 / sq);
+          var cy = Math.floor((i / 3) % sq);
+
+          //perlin update
+
+          var psx = cx * pscale; // + Math.sin(timer2);
+          var psz = cy * pscale; // + Math.cos(timer2);
+          var ah = perlin.noise3d(psx, timer2, psz);
+
+          var psx2 = cx * pscale2 + timer3;
+          var psz2 = cy * pscale2 + timer3;
+          var aj = perlin.noise3d(psx2, 210, psz2);
+          amp2 = 0.8;
+
+          pa[i] = ah * amp + aj * amp2;
+        }
+
+        pos.needsUpdate = true;
+        planegeometry.computeVertexNormals();
+
+        render();
+
+        stats.update();
+      }
+
+      function render() {
+        tick = tick + 1;
+
+        if (metalMaterial !== undefined) {
+          metalMaterial.roughness = 1.0;
+          metalMaterial.bumpScale = -0.05;
+          var newEnvMap = metalMaterial.envMap;
+          newEnvMap = hdrCubeRenderTarget
+            ? hdrCubeRenderTarget.texture
+            : null;
+          if (newEnvMap !== metalMaterial.envMap) {
+            metalMaterial.envMap = newEnvMap;
+            metalMaterial.needsUpdate = true;
+          }
+        }
+        renderer.toneMappingExposure = Math.pow(params.exposure, 4.0);
+
+        camera.lookAt(scene.position);
+
+        // Render depth into depthRenderTarget
+        scene.overrideMaterial = depthMaterial;
+        renderer.render(scene, camera, depthRenderTarget, true);
+
+        // Render renderPass and SSAO shaderPass
+        scene.overrideMaterial = null;
+        composer.render();
+      }
+    };
+
+    var alreadyrunflag = 0;
+
+    if (document.addEventListener)
+      document.addEventListener(
+        "DOMContentLoaded",
+        function () {
+          alreadyrunflag = 1;
+          VanillaRunOnDomReady();
+        },
+        false
+      );
+    else if (document.all && !window.opera) {
+      document.write(
+        '<script type="text/javascript" id="contentloadtag" defer="defer" src="javascript:void(0)"><\/script>'
+      );
+      var contentloadtag = document.getElementById("contentloadtag");
+      contentloadtag.onreadystatechange = function () {
+        if (this.readyState == "complete") {
+          alreadyrunflag = 1;
+          VanillaRunOnDomReady();
+        }
+      };
+    }
+
+    window.onload = function () {
+      setTimeout("if (!alreadyrunflag){VanillaRunOnDomReady}", 0);
+    };
+  </script>
+</head>
+
+<body>
+  <div class="msg">2018 centralfax</div>
+</body>
+
+</html>
